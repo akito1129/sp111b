@@ -1,0 +1,13 @@
+# 編譯結果
+target/
+
+# 編輯器
+.vscode/
+*.swo
+*.swp
+
+# 輸出的 ppm 檔名
+out.ppm
+
+# valgrind 效能分析
+callgrind.*
