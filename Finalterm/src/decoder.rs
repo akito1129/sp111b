@@ -1,5 +1,4 @@
 #![allow(non_snake_case)]
-mod png;
 use crate::image::Image;
 
 use std::io::BufReader;
@@ -10,8 +9,6 @@ use std::f32::consts::PI;
 use crate::primitives::*;
 use crate::reader::data_reader;
 use crate::image::Color;
-
-fn png_function();
 
 fn cc(i: usize, j: usize) -> f32 {
     if i == 0 && j == 0 {
@@ -162,7 +159,6 @@ impl<'a> MCUWrap<'a> {
         println!("---------------- 反向餘弦變換之後 ----------------");
         self.display();
     }
-
     fn toRGB(&mut self) -> Vec<Vec<Color>> {
         self.decode();
 
@@ -176,80 +172,59 @@ impl<'a> MCUWrap<'a> {
         let mut ret = vec![vec![Color::RGB(0, 0, 0); mcu_width as usize]; mcu_height as usize];
         for i in 0..mcu_height {
             for j in 0..mcu_width {
+                // 獲取 Y, Cb, Cr 三個顏色分量所對應的採樣
                 let mut YCbCr = [0.0; 3];
                 for id in 0..3 {
                     let vh = (i * component_infos[id].vertical_sampling / max_vertical_sampling) as usize;
-                    let uh = (j * component_infos[id].horizontal_sampling / max_horizontal_sampling) as usize;
-
-                    for m in 0..component_infos[id].vertical_sampling {
-                        for n in 0..component_infos[id].horizontal_sampling {
-                            let cur = self.mcu[id][vh + m as usize][uh + n as usize];
-                            let pos = ZZ[m * 8 + n];
-                            for k in 0..64 {
-                                let row = pos[k] / 8;
-                                let col = pos[k] % 8;
-                                let cos_a = (2.0 * PI * row as f32 / 16.0).cos();
-                                let cos_b = (2.0 * PI * col as f32 / 16.0).cos();
-                                YCbCr[id] += cur[row][col] * cc(row, col) * cos_a * cos_b;
-                            }
-                        }
-                    }
+                    let vw = (j * component_infos[id].horizontal_sampling / max_horizontal_sampling) as usize;
+                    YCbCr[id] = self.mcu[id][vh / 8][vw / 8][vh % 8][vw % 8];
                 }
-
-                let R = chomp(YCbCr[0] + 1.402 * (YCbCr[2] - 128.0));
-                let G = chomp(YCbCr[0] - 0.344136 * (YCbCr[1] - 128.0) - 0.714136 * (YCbCr[2] - 128.0));
-                let B = chomp(YCbCr[0] + 1.772 * (YCbCr[1] - 128.0));
-
+                let (Y, Cb, Cr) = (YCbCr[0], YCbCr[1], YCbCr[2]);
+                // let (Y, Cb, Cr) = (YCbCr[0], 0.0, 0.0);
+                let R = chomp(Y + 1.402*Cr + 128.0);
+                let G = chomp(Y - 0.34414*Cb - 0.71414*Cr + 128.0);
+                let B = chomp(Y + 1.772*Cb + 128.0);
                 ret[i as usize][j as usize] = Color::RGB(R, G, B);
             }
         }
-
-        return ret
+        return ret;
     }
 }
 
-fn save_as_png(image: Image, filename: &str) -> Result<(), std::io::Error> {
-    let width = image.width;
-    let height = image.height;
-    let mut buffer = Vec::new();
+pub fn decoder(reader: BufReader<File>) -> Image {
+    let (jpeg_meta_data, MCUs) = data_reader(reader);
 
-    for row in image.pixels {
-        for pixel in row {
-            match pixel {
-                Color::RGB(r, g, b) => {
-                    buffer.push(r);
-                    buffer.push(g);
-                    buffer.push(b);
+    let sof_info = &jpeg_meta_data.sof_info;
+    let mcu_width = 8 * sof_info.max_horizontal_sampling as usize;
+    let mcu_height = 8 * sof_info.max_vertical_sampling as usize;
+
+    // 寬度上有幾個 MCU
+    let mcu_width_number = ((sof_info.width as usize - 1) / mcu_width + 1) as usize;
+    // 高度上有幾個 MCU
+    let mcu_height_number = ((sof_info.height as usize - 1) / mcu_height + 1) as usize;
+
+    let image_width = (mcu_width_number * mcu_width) as u32;
+    let image_height = (mcu_height_number * mcu_height) as u32;
+    let mut image = Image::new(image_width, image_height);
+
+    for h in 0..mcu_height_number {
+        for w in 0..mcu_width_number {
+            let mcu = MCUs[h][w].clone();
+            let mcu_rgb = MCUWrap::new(mcu, &jpeg_meta_data).toRGB();
+            for y in 0..mcu_height {
+                for x in 0..mcu_width {
+                    image.pixels[h*mcu_height + y][w*mcu_width + x] = mcu_rgb[y][x];
                 }
             }
         }
     }
 
-    let file = File::create(filename)?;
-    let encoder = png::Encoder::new(file, width, height);
-    let mut writer = encoder.write_header()?;
-    writer.write_image_data(&buffer)?;
-
-    Ok(())
+    return image;
 }
 
-fn main() {
-    let file = File::open("./data/input.jpg").expect("Failed to open input.jpg");
-    let reader = BufReader::new(file);
-    let (meta_data, mcu_data) = data_reader(reader);
-
-    let mut mcu_wrap = MCUWrap {
-        mcu: mcu_data,
-        jpeg_meta_data: &meta_data,
-    };
-
-    let image = Image::new(meta_data.sof_info.image_width, meta_data.sof_info.image_height);
-    let rgb_pixels = mcu_wrap.toRGB();
-    let image_with_pixels = Image {
-        pixels: rgb_pixels,
-        width: meta_data.sof_info.image_width,
-        height: meta_data.sof_info.image_height,
-    };
-
-    save_as_png(image_with_pixels, "output.png").expect("Failed to save PNG file");
+pub fn show_mcu_stage(reader: BufReader<File>, h: usize, w: usize) {
+    let (jpeg_meta_data, MCUs) = data_reader(reader);
+    let mcu = MCUs[h][w].clone();
+    let mut mcu_wrap = MCUWrap::new(mcu, &jpeg_meta_data);
+    mcu_wrap.show_all_stage();
 }
